@@ -1,99 +1,117 @@
-name: Build AMBuild Plugin
+name: Build for Metamod 2.0 dev
 
 on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
   push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-  release:
-    types:
-      - created
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: metamod-release
+  cancel-in-progress: false
 
 jobs:
   build:
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
-    permissions:
-      contents: write
-    runs-on: ubuntu-20.04
-
-    env:
-      HL2SDK_ROOT: "${{ github.workspace }}/external"
-      MMS_PATH: "${{ github.workspace }}/external/metamod-source"
-      MANIFEST_PATH: "${{ github.workspace }}/external/metamod-source/hl2sdk-manifests"
-
+    runs-on: ubuntu-24.04
     steps:
-      - name: Generate build number
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        id: buildnumber
-        uses: onyxmueller/build-tag-number@v1
-        with:
-          token: ${{secrets.github_token}}
+      - uses: actions/checkout@v4
 
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up dependencies
+      - name: Find latest Metamod 2.0 dev release
+        id: metamod
         run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update -qy
-          sudo apt-get install -y git clang-10 clang++-10 binutils
-          sudo apt-get install -y python3
-          python3 -m pip install --upgrade pip importlib-metadata
-          python3 -m pip install setuptools==45.2.0
-          git clone https://github.com/alliedmodders/ambuild.git
-          cd ambuild
-          pip install .
-          cd ..
+          python3 - <<'PY'
+          import json, os, re, urllib.request
+          url = 'https://api.github.com/repos/alliedmodders/metamod-source/releases?per_page=100'
+          request = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'cs2-antidll-builder'})
+          with urllib.request.urlopen(request) as response:
+              releases = json.load(response)
+          versions = []
+          for release in releases:
+              match = re.fullmatch(r'2\.0\.0\.(\d+)', release['tag_name'])
+              if match and release['prerelease'] and not release['draft']:
+                  versions.append((int(match.group(1)), release['tag_name']))
+          if not versions:
+              raise SystemExit('No Metamod 2.0 dev release found')
+          tag = max(versions)[1]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print(f'tag={tag}', file=output)
+          print(f'Building against Metamod {tag}')
+          PY
+
+      - name: Check whether release exists
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MM_TAG: ${{ steps.metamod.outputs.tag }}
+        run: |
+          if gh release view "mm-${MM_TAG}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.release.outputs.exists == 'false'
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools and dependencies
+        if: steps.release.outputs.exists == 'false'
+        env:
+          MM_TAG: ${{ steps.metamod.outputs.tag }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zip
+          python -m pip install --upgrade pip setuptools
+          python -m pip install git+https://github.com/alliedmodders/ambuild.git
           mkdir external
-          cd external
-          git clone --recursive --branch master --single-branch https://github.com/alliedmodders/metamod-source.git
-          git clone --recursive --branch cs2 --single-branch https://github.com/alliedmodders/hl2sdk.git hl2sdk-cs2
-          cd ../..
-          git clone https://github.com/pisex/SchemaEntity.git
-          cd ${{ github.workspace }}
-          
-      - name: Configure and build plugin
+          git clone --depth 1 --branch "$MM_TAG" --recurse-submodules --shallow-submodules https://github.com/alliedmodders/metamod-source.git external/metamod-source
+          git clone --depth 1 --branch cs2 https://github.com/alliedmodders/hl2sdk.git external/hl2sdk-cs2
+          git clone --depth 1 https://github.com/pisex/SchemaEntity.git ../SchemaEntity
+
+      - name: Compile
+        if: steps.release.outputs.exists == 'false'
+        env:
+          CC: clang
+          CXX: clang++
         run: |
           mkdir build
           cd build
-          python3 ../configure.py -s cs2 --targets x86_64 --enable-optimize --hl2sdk-manifests=./hl2sdk-manifests --mms_path=$MMS_PATH --hl2sdk-root=$HL2SDK_ROOT
+          python ../configure.py -s cs2 --targets x86_64 --enable-optimize \
+            --hl2sdk-manifests="$GITHUB_WORKSPACE/external/metamod-source/hl2sdk-manifests" \
+            --mms_path="$GITHUB_WORKSPACE/external/metamod-source" \
+            --hl2sdk-root="$GITHUB_WORKSPACE/external"
           ambuild
 
-      - name: Create archive
+      - name: Package and verify original release layout
+        if: steps.release.outputs.exists == 'false'
         run: |
-          cd build/package
-          zip -r ${{ github.workspace }}.zip addons
+          mkdir -p dist/AntiDLL dist/configs/AntiDLL dist/metamod
+          cp build/package/addons/AntiDLL/AntiDLL.so dist/AntiDLL/
+          cp configs/AntiDLL/events.txt configs/AntiDLL/settings.ini dist/configs/AntiDLL/
+          cp build/package/addons/metamod/AntiDLL.vdf dist/metamod/
+          (cd dist && zip -r "$GITHUB_WORKSPACE/AntiDLL.zip" AntiDLL configs metamod)
+          python3 - <<'PY'
+          from zipfile import ZipFile
+          expected = {'AntiDLL/AntiDLL.so', 'configs/AntiDLL/events.txt', 'configs/AntiDLL/settings.ini', 'metamod/AntiDLL.vdf'}
+          with ZipFile('AntiDLL.zip') as archive:
+              actual = {name for name in archive.namelist() if not name.endswith('/')}
+          assert actual == expected, (actual, expected)
+          print('Archive contents:', sorted(actual))
+          PY
 
-      - name: Upload archive to artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: compile
-          path: ${{ github.workspace }}.zip
-
-  release:
-    needs: build
-    permissions:
-      contents: write
-    runs-on: ubuntu-20.04
-  
-    steps:
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: compile
-          path: .
-  
-      - name: List files in directory
-        run: ls -la
-  
-      - name: Find downloaded artifact
-        id: find_artifact
-        run: echo "ARTIFACT=$(ls | grep '\.zip$')" >> $GITHUB_ENV
-  
-      - name: Upload release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.event.head_commit.message }}
-          files: ${{ env.ARTIFACT }}
+      - name: Publish release
+        if: steps.release.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MM_TAG: ${{ steps.metamod.outputs.tag }}
+        run: |
+          gh release create "mm-${MM_TAG}" AntiDLL.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "AntiDLL for Metamod ${MM_TAG}" \
+            --notes "Built from commit ${GITHUB_SHA} against Metamod:Source ${MM_TAG}."
