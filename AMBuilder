@@ -14,12 +14,10 @@ for sdk_target in MMSPlugin.sdk_targets:
   
   binary.compiler.cxxincludes += [
     os.path.join(builder.sourcePath, 'include'),
-    os.path.join(builder.sourcePath, '..', 'SchemaEntity'),
   ]
 
   binary.sources += [
     'antidll.cpp',
-    os.path.join('..', 'SchemaEntity', 'schemasystem.cpp'),
   ]
 
   if cxx.target.arch == 'x86':

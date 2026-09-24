@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include "antidll.h"
 #include "metamod_oslink.h"
-#include "schemasystem/schemasystem.h"
 #include <fstream>
 
 AntiDLL g_AntiDLL;
@@ -41,7 +40,6 @@ bool AntiDLL::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool 
 	PLUGIN_SAVEVARS();
 
 	GET_V_IFACE_CURRENT(GetEngineFactory, g_pCVar, ICvar, CVAR_INTERFACE_VERSION);
-	GET_V_IFACE_ANY(GetEngineFactory, g_pSchemaSystem, ISchemaSystem, SCHEMASYSTEM_INTERFACE_VERSION);
 	GET_V_IFACE_CURRENT(GetEngineFactory, engine, IVEngineServer2, SOURCE2ENGINETOSERVER_INTERFACE_VERSION);
 	GET_V_IFACE_CURRENT(GetFileSystemFactory, g_pFullFileSystem, IFileSystem, FILESYSTEM_INTERFACE_VERSION);
 

@@ -71,7 +71,6 @@ jobs:
           mkdir external
           git clone --depth 1 --branch "$MM_TAG" --recurse-submodules --shallow-submodules https://github.com/alliedmodders/metamod-source.git external/metamod-source
           git clone --depth 1 --branch cs2 https://github.com/alliedmodders/hl2sdk.git external/hl2sdk-cs2
-          git clone --depth 1 https://github.com/pisex/SchemaEntity.git ../SchemaEntity
 
       - name: Compile
         if: steps.release.outputs.exists == 'false'
